@@ -44,9 +44,10 @@ async function uploadToGitHub(path, data, env) {
 }
 
 const CORS = {
-  'Access-Control-Allow-Origin':  '*',
-  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Max-Age': '86400',
 };
 
 // ─── Date Helpers ─────────────────────────────────────────────────────────────
@@ -384,21 +385,17 @@ async function smartRefresh(env) {
     lineupAttempts:      {},
   };
 
-  // Random interval 2–3.5 minutes
   const interval = (2 + Math.random() * 1.5) * 60 * 1000;
 
-  // Check if within match window (or no windows known yet)
   const inWindow = state.matchWindows.length === 0 ||
     state.matchWindows.some(w => now >= w.start - 5 * 60 * 1000 && now <= w.end + 30 * 60 * 1000);
 
   if (!inWindow) return;
   if (now - state.lastScoreboardFetch < interval) return;
 
-  // ── Fetch scoreboard ──────────────────────────────────────────────────────
   const matches = await fetchScoreboard(today, env, true);
   state.lastScoreboardFetch = now;
 
-  // ── Build match windows ───────────────────────────────────────────────────
   if (matches.length > 0) {
     const times  = matches.map(m => new Date(m.date).getTime()).filter(t => !isNaN(t));
     const groups = [];
@@ -416,7 +413,6 @@ async function smartRefresh(env) {
     state.matchWindows = groups;
   }
 
-  // ── Detect score/status changes for live matches ──────────────────────────
   const liveMatches = matches.filter(m => m.status === 'in');
   state.activeMatchIds = liveMatches.map(m => m.id);
 
@@ -433,13 +429,11 @@ async function smartRefresh(env) {
 
     let willFetch = false;
 
-    // ── 1) تغيرت النتيجة → اجلب السامري (أهداف/بطاقات) ──────────────────────
     if (prevScore !== score) {
       summaryFetches.push(fetchAndStoreSummary(m.id, m.league, env));
       await kvPutStr(env, prevKey, score, 86400);
       willFetch = true;
     } else {
-      // ── 2) احتياطي كل 15–20 دقيقة إذا لم تتغير النتيجة ────────────────────
       const lastFetch      = state.lastSummaryFetch[m.id] || 0;
       const summaryInterval = (15 + Math.random() * 5) * 60 * 1000;
       if (now - lastFetch > summaryInterval) {
@@ -449,8 +443,6 @@ async function smartRefresh(env) {
       }
     }
 
-    // ── 3) التشكيلة: مرة واحدة فقط، بحد أقصى محاولتان، مستقلة تماماً ────────
-    // يُجلب فقط إذا: لم تُجلب بنجاح بعد + لم تتجاوز المحاولتين + لا يوجد طلب آخر مجدول
     if (!lineupDone && lineupAttempts < 2 && !willFetch) {
       summaryFetches.push(fetchAndStoreSummary(m.id, m.league, env));
       state.lineupAttempts[m.id] = lineupAttempts + 1;
@@ -459,26 +451,21 @@ async function smartRefresh(env) {
 
   await Promise.allSettled(summaryFetches);
 
-  // ── Standings & Scorers: per time-group, when ALL matches in the group finish ─
   const processedTimes   = new Set(state.processedGroupTimes || []);
   const timeGroups       = groupByStartTime(matches);
   const standingsFetches = [];
 
   for (const group of timeGroups) {
-    // Skip groups we already processed
     if (processedTimes.has(group.anchorTime)) continue;
 
-    // Only act when every match in this time-group is finished
     const allFinished = group.matches.every(m => m.status === 'post');
     if (!allFinished) continue;
 
-    // Collect unique leagues (with their season) from this group
     const leagueSeasonMap = {};
     for (const m of group.matches) {
       if (m.league) leagueSeasonMap[m.league] = m.season || '';
     }
 
-    // Refresh standings & scorers for each league in this group
     for (const [league, season] of Object.entries(leagueSeasonMap)) {
       standingsFetches.push(
         refreshStandingsForLeague(league, season, env),
@@ -498,7 +485,6 @@ async function smartRefresh(env) {
 // ─── Known Leagues (قائمة ثابتة شاملة 110+ دوري) ─────────────────────────────
 
 const KNOWN_LEAGUES = [
-  // أوروبا — الدوريات
   'eng.1','eng.2','eng.3',
   'esp.1','esp.2',
   'ger.1','ger.2',
@@ -529,7 +515,6 @@ const KNOWN_LEAGUES = [
   'cyp.1',
   'kaz.1',
   'bul.1',
-  // أوروبا — الكؤوس
   'eng.fa','eng.league_cup',
   'esp.copa_del_rey','esp.super_cup',
   'ger.dfb_pokal','ger.super_cup',
@@ -538,13 +523,10 @@ const KNOWN_LEAGUES = [
   'por.taca.portugal',
   'ned.knvb_cup',
   'sco.fa_cup','sco.league_cup',
-  // أوروبا — البطولات الدولية
   'uefa.champions','uefa.europa','uefa.europa.conf',
   'uefa.euro','uefa.nations',
   'uefa.super_cup',
-  // تصفيات أوروبية
   'uefa.world','uefa.euro.qual',
-  // الخليج والعرب
   'ksa.1','ksa.2',
   'qat.1',
   'uae.pro','uae.league2',
@@ -561,7 +543,6 @@ const KNOWN_LEAGUES = [
   'alg.1',
   'lby.1',
   'sud.1',
-  // آسيا
   'afc.champions','afc.champions2',
   'afc.asian_cup',
   'jpn.1','jpn.2',
@@ -576,7 +557,6 @@ const KNOWN_LEAGUES = [
   'sgp.1',
   'idn.1',
   'uzb.1',
-  // أفريقيا
   'caf.champions','caf.confederations',
   'caf.nations','caf.nations.qual',
   'zaf.1','zaf.2',
@@ -585,7 +565,6 @@ const KNOWN_LEAGUES = [
   'sen.1',
   'tnz.1',
   'ken.1',
-  // أمريكا اللاتينية
   'conmebol.libertadores','conmebol.sudamericana',
   'conmebol.america','conmebol.world',
   'bra.1','bra.2','bra.3',
@@ -600,15 +579,12 @@ const KNOWN_LEAGUES = [
   'uru.1',
   'ven.1',
   'concacaf.nations.league','concacaf.gold','concacaf.champions',
-  // أمريكا الشمالية
   'usa.1','usa.2','usa.open',
   'can.1',
-  // دولية
   'fifa.world','fifa.cwc','fifa.world.qual',
   'friendly.national','friendly.club',
 ];
 
-// الكؤوس والبطولات الدولية لا ترتيب لها — مستثناة من standings فقط
 const NO_STANDINGS = new Set([
   'eng.fa','eng.league_cup','esp.copa_del_rey','esp.super_cup',
   'ger.dfb_pokal','ger.super_cup','ita.coppa_italia','ita.super_cup',
@@ -622,8 +598,6 @@ const NO_STANDINGS = new Set([
 ]);
 
 // ─── Standings & Scorers Refresh ──────────────────────────────────────────────
-
-// ─── Qualification Colors System ─────────────────────────────────────────────
 
 const QUAL = {
   UCL:        { color: '#81D6AC', label: 'دوري أبطال أوروبا' },
@@ -641,7 +615,6 @@ const QUAL = {
   RELEGATED:  { color: '#FF7F84', label: 'هبوط' },
 };
 
-// Map ESPN note text → qual key
 function mapEspnNote(text) {
   const t = (text || '').toLowerCase();
   if (t.includes('champions league') && (t.includes('qualifier') || t.includes('qualifying'))) return 'UCL_Q';
@@ -660,117 +633,36 @@ function mapEspnNote(text) {
   return null;
 }
 
-// Fallback rules per league: array of { ranks:[...], type }
 const LEAGUE_RULES = {
-  'eng.1':  [
-    { ranks:[1,2,3,4], type:'UCL' }, { ranks:[5], type:'UEL' },
-    { ranks:[6], type:'UECL' }, { ranks:[18,19,20], type:'RELEGATED' },
-  ],
-  'esp.1':  [
-    { ranks:[1,2,3,4], type:'UCL' }, { ranks:[5,6], type:'UEL' },
-    { ranks:[7], type:'UECL' }, { ranks:[18,19,20], type:'RELEGATED' },
-  ],
-  'ger.1':  [
-    { ranks:[1,2,3,4], type:'UCL' }, { ranks:[5,6], type:'UEL' },
-    { ranks:[7], type:'UECL' }, { ranks:[16], type:'PLAYOFF' },
-    { ranks:[17,18], type:'RELEGATED' },
-  ],
-  'ita.1':  [
-    { ranks:[1,2,3,4], type:'UCL' }, { ranks:[5,6], type:'UEL' },
-    { ranks:[7], type:'UECL' }, { ranks:[18,19,20], type:'RELEGATED' },
-  ],
-  'fra.1':  [
-    { ranks:[1,2,3], type:'UCL' }, { ranks:[4], type:'UCL_Q' },
-    { ranks:[5,6], type:'UEL' }, { ranks:[7], type:'UECL' },
-    { ranks:[16], type:'PLAYOFF' }, { ranks:[17,18], type:'RELEGATED' },
-  ],
-  'por.1':  [
-    { ranks:[1,2,3,4], type:'UCL' }, { ranks:[5,6], type:'UEL' },
-    { ranks:[7], type:'UECL' }, { ranks:[16], type:'PLAYOFF' },
-    { ranks:[17,18], type:'RELEGATED' },
-  ],
-  'ned.1':  [
-    { ranks:[1], type:'UCL' }, { ranks:[2,3], type:'UCL_Q' },
-    { ranks:[4,5], type:'UEL' }, { ranks:[6,7], type:'UECL' },
-    { ranks:[16], type:'PLAYOFF' }, { ranks:[17,18], type:'RELEGATED' },
-  ],
-  'sco.1':  [
-    { ranks:[1,2], type:'UCL' }, { ranks:[3,4], type:'UEL' },
-    { ranks:[5], type:'UECL' }, { ranks:[11,12], type:'RELEGATED' },
-  ],
-  'bel.1':  [
-    { ranks:[1,2], type:'UCL' }, { ranks:[3,4], type:'UEL' },
-    { ranks:[5,6], type:'UECL' }, { ranks:[16], type:'RELEGATED' },
-  ],
-  'tur.1':  [
-    { ranks:[1,2], type:'UCL' }, { ranks:[3], type:'UCL_Q' },
-    { ranks:[4], type:'UEL' }, { ranks:[5,6], type:'UECL' },
-    { ranks:[17,18,19], type:'RELEGATED' },
-  ],
-  'gre.1':  [
-    { ranks:[1,2], type:'UCL' }, { ranks:[3], type:'UEL' },
-    { ranks:[4,5], type:'UECL' }, { ranks:[15,16], type:'RELEGATED' },
-  ],
-  'rus.1':  [
-    { ranks:[1,2], type:'UCL' }, { ranks:[3,4], type:'UEL' },
-    { ranks:[15,16], type:'RELEGATED' },
-  ],
-  'ksa.1':  [
-    { ranks:[1,2,3], type:'AFC_UCL' }, { ranks:[16], type:'PLAYOFF' },
-    { ranks:[17,18], type:'RELEGATED' },
-  ],
-  'qat.1':  [
-    { ranks:[1,2], type:'AFC_UCL' }, { ranks:[9,10], type:'RELEGATED' },
-  ],
-  'uae.pro': [
-    { ranks:[1,2], type:'AFC_UCL' }, { ranks:[13,14], type:'RELEGATED' },
-  ],
-  'egy.1':  [
-    { ranks:[1,2], type:'CAF_UCL' }, { ranks:[14,15,16], type:'RELEGATED' },
-  ],
-  'mar.1':  [
-    { ranks:[1,2], type:'CAF_UCL' }, { ranks:[14,15,16], type:'RELEGATED' },
-  ],
-  'bra.1':  [
-    { ranks:[1,2,3,4,5,6], type:'LIBERTAD' }, { ranks:[7,8], type:'SUDAMERI' },
-    { ranks:[17,18,19,20], type:'RELEGATED' },
-  ],
-  'arg.1':  [
-    { ranks:[1,2,3,4,5,6], type:'LIBERTAD' }, { ranks:[7,8,9,10], type:'SUDAMERI' },
-    { ranks:[26,27,28], type:'RELEGATED' },
-  ],
-  'col.1':  [
-    { ranks:[1,2,3,4,5,6,7,8], type:'NEXT_ROUND' },
-    { ranks:[1], type:'LIBERTAD' }, { ranks:[2,3], type:'SUDAMERI' },
-  ],
-  'mex.1':  [
-    { ranks:[1,2,3,4,5,6,7,8], type:'NEXT_ROUND' },
-    { ranks:[17,18], type:'RELEGATED' },
-  ],
-  'usa.1':  [
-    { ranks:[1,2,3,4,5,6,7], type:'NEXT_ROUND' },
-  ],
-  'conmebol.world': [
-    { ranks:[1,2,3,4,5,6], type:'WC' }, { ranks:[7], type:'WC_Q' },
-  ],
-  'concacaf.world': [
-    { ranks:[1,2,3], type:'WC' }, { ranks:[4], type:'WC_Q' },
-  ],
-  'afc.world': [
-    { ranks:[1,2,3,4,5,6,7,8], type:'WC' }, { ranks:[9,10], type:'WC_Q' },
-  ],
-  'caf.world': [
-    { ranks:[1], type:'WC' },
-  ],
-  'uefa.nations_a': [
-    { ranks:[1], type:'NEXT_ROUND' }, { ranks:[4], type:'RELEGATED' },
-  ],
-  'uefa.nations_b': [
-    { ranks:[1], type:'NEXT_ROUND' }, { ranks:[4], type:'RELEGATED' },
-  ],
+  'eng.1':  [[1,2,3,4],'UCL'],[5,'UEL'],[6,'UECL'],[18,19,20,'RELEGATED'],
+  'esp.1':  [[1,2,3,4],'UCL'],[5,6,'UEL'],[7,'UECL'],[18,19,20,'RELEGATED'],
+  'ger.1':  [[1,2,3,4],'UCL'],[5,6,'UEL'],[7,'UECL'],[16,'PLAYOFF'],[17,18,'RELEGATED'],
+  'ita.1':  [[1,2,3,4],'UCL'],[5,6,'UEL'],[7,'UECL'],[18,19,20,'RELEGATED'],
+  'fra.1':  [[1,2,3],'UCL'],[4,'UCL_Q'],[5,6,'UEL'],[7,'UECL'],[16,'PLAYOFF'],[17,18,'RELEGATED'],
+  'por.1':  [[1,2,3,4],'UCL'],[5,6,'UEL'],[7,'UECL'],[16,'PLAYOFF'],[17,18,'RELEGATED'],
+  'ned.1':  [[1],'UCL'],[2,3,'UCL_Q'],[4,5,'UEL'],[6,7,'UECL'],[16,'PLAYOFF'],[17,18,'RELEGATED'],
+  'sco.1':  [[1,2],'UCL'],[3,4,'UEL'],[5,'UECL'],[11,12,'RELEGATED'],
+  'bel.1':  [[1,2],'UCL'],[3,4,'UEL'],[5,6,'UECL'],[16,'RELEGATED'],
+  'tur.1':  [[1,2],'UCL'],[3,'UCL_Q'],[4,'UEL'],[5,6,'UECL'],[17,18,19,'RELEGATED'],
+  'gre.1':  [[1,2],'UCL'],[3,'UEL'],[4,5,'UECL'],[15,16,'RELEGATED'],
+  'rus.1':  [[1,2],'UCL'],[3,4,'UEL'],[15,16,'RELEGATED'],
+  'ksa.1':  [[1,2,3],'AFC_UCL'],[16,'PLAYOFF'],[17,18,'RELEGATED'],
+  'qat.1':  [[1,2],'AFC_UCL'],[9,10,'RELEGATED'],
+  'uae.pro':[[1,2],'AFC_UCL'],[13,14,'RELEGATED'],
+  'egy.1':  [[1,2],'CAF_UCL'],[14,15,16,'RELEGATED'],
+  'mar.1':  [[1,2],'CAF_UCL'],[14,15,16,'RELEGATED'],
+  'bra.1':  [[1,2,3,4,5,6],'LIBERTAD'],[7,8,'SUDAMERI'],[17,18,19,20,'RELEGATED'],
+  'arg.1':  [[1,2,3,4,5,6],'LIBERTAD'],[7,8,9,10,'SUDAMERI'],[26,27,28,'RELEGATED'],
+  'col.1':  [[1,2,3,4,5,6,7,8],'NEXT_ROUND'],[1,'LIBERTAD'],[2,3,'SUDAMERI']],
+  'mex.1':  [[1,2,3,4,5,6,7,8],'NEXT_ROUND'],[17,18,'RELEGATED']],
+  'usa.1':  [[1,2,3,4,5,6,7],'NEXT_ROUND']],
+  'conmebol.world': [[1,2,3,4,5,6],'WC'],[7,'WC_Q']],
+  'concacaf.world': [[1,2,3],'WC'],[4,'WC_Q']],
+  'afc.world': [[1,2,3,4,5,6,7,8],'WC'],[9,10,'WC_Q']],
+  'caf.world': [[1],'WC']],
+  'uefa.nations_a': [[1],'NEXT_ROUND'],[4,'RELEGATED']],
+  'uefa.nations_b': [[1],'NEXT_ROUND'],[4,'RELEGATED']],
 };
-
-// ─── Translations ─────────────────────────────────────────────────────────────
 
 const LANGS = ['ar','en','fr','es','pt','de','it','tr','ru','id'];
 
@@ -943,8 +835,6 @@ function qualLabel(entry, lang) {
   return entry.qualLabel || '';
 }
 
-// ─── end Translations ──────────────────────────────────────────────────────────
-
 function getQualInfo(league, rank, noteText, espnColor) {
   if (noteText) {
     const key = mapEspnNote(noteText);
@@ -953,7 +843,7 @@ function getQualInfo(league, rank, noteText, espnColor) {
   }
   const rules = LEAGUE_RULES[league] || [];
   for (const rule of rules) {
-    if (rule.ranks.includes(rank) && QUAL[rule.type]) {
+    if (rule.ranks?.includes(rank) && QUAL[rule.type]) {
       return { color: QUAL[rule.type].color, label: QUAL[rule.type].label, key: rule.type };
     }
   }
@@ -1067,8 +957,6 @@ async function refreshScorersForLeague(league, season, env) {
   } catch { return null; }
 }
 
-// ─── Fixtures Refresh ─────────────────────────────────────────────────────────
-
 async function refreshFixtures(env) {
   const today = todayStr();
   let   days  = 7;
@@ -1097,8 +985,6 @@ async function refreshFixtures(env) {
   return payload;
 }
 
-// ─── Archive: Week by Week ────────────────────────────────────────────────────
-
 async function archiveStep(env) {
   let archiveState = await kvGet(env, 'archive:state');
 
@@ -1121,7 +1007,6 @@ async function archiveStep(env) {
   const ghPath    = `data/archive/${week}.json`;
   const useGitHub = !!(env.GITHUB_TOKEN && env.GITHUB_REPO);
 
-  // إذا كان GitHub متاحاً نتحقق إن كان الملف موجوداً فيه بالفعل
   let alreadyUploaded = false;
   if (useGitHub) {
     try {
@@ -1132,7 +1017,6 @@ async function archiveStep(env) {
       alreadyUploaded = chk.ok;
     } catch {}
   } else {
-    // بدون GitHub: تحقق من KV
     alreadyUploaded = !!(await kvGet(env, `scoreboard:${week}`));
   }
 
@@ -1157,7 +1041,6 @@ async function archiveStep(env) {
       });
 
       if (useGitHub) {
-        // ارفع ملف الأسبوع + ملف لكل يوم منفصل إلى GitHub
         await uploadToGitHub(ghPath, allMatches, env);
         await Promise.allSettled(
           Object.entries(byDate).map(([d, matches]) =>
@@ -1165,7 +1048,6 @@ async function archiveStep(env) {
           )
         );
       } else {
-        // احتياطي: اكتب في KV إذا لم يكن GitHub مُعدّاً
         await kvPut(env, `scoreboard:${week}`, allMatches, 90 * 86400);
         for (const [d, matches] of Object.entries(byDate)) {
           await kvPut(env, `scoreboard:${d}`, matches, 90 * 86400);
@@ -1178,16 +1060,12 @@ async function archiveStep(env) {
   await kvPut(env, 'archive:state', archiveState, 90 * 86400);
 }
 
-// ─── Deep Future Scan (365 يوم — يعمل مرة كل 23 ساعة) ───────────────────────
-
 async function deepFutureScan(env) {
-  // حارس زمني: تجاهل التشغيل إذا كان آخر تشغيل منذ أقل من 23 ساعة
   const lastRun = await kvGet(env, 'deep:lastRun');
   if (lastRun && Date.now() - lastRun < 23 * 60 * 60 * 1000) return;
 
   const today = todayStr();
 
-  // ── جلب 365 يوم قادم من ESPN ──────────────────────────────────────────────
   let allMatches = [];
   try {
     let page = 1;
@@ -1208,7 +1086,6 @@ async function deepFutureScan(env) {
 
   await kvPut(env, 'fixtures:future', upcoming, 30 * 86400);
 
-  // ── اكتشاف ديناميكي للدوريات من مباريات اليوم والمستقبل ────────────────────
   const discoveredLeagues = new Set();
   try {
     const recentScoreboard = await kvGet(env, `scoreboard:${today}`);
@@ -1218,10 +1095,8 @@ async function deepFutureScan(env) {
     upcoming.forEach(m => { if (m.league) discoveredLeagues.add(m.league); });
   } catch {}
 
-  // دمج القائمة الثابتة + الدوريات المكتشفة بدون تكرار
   const allLeagues = [...new Set([...KNOWN_LEAGUES, ...discoveredLeagues])];
 
-  // ── جلب الترتيب والهدافين لكل الدوريات ────────────────────────────────────
   let fetched = 0;
   for (const league of allLeagues) {
     const tasks = [];
@@ -1235,8 +1110,6 @@ async function deepFutureScan(env) {
   await kvPut(env, 'deep:lastRun', Date.now(), 86400);
   await kvPut(env, 'deep:leagueCount', allLeagues.length, 86400);
 }
-
-// ─── SEO Keywords Generators ─────────────────────────────────────────────────
 
 function generateKeywords(match) {
   const h = match.homeTeam || '';
@@ -1318,8 +1191,6 @@ function generateScorersKeywords(leagueName, seasonLabel) {
     l, s,
   ].filter(Boolean).join(', ');
 }
-
-// ─── SEO Page: Match ──────────────────────────────────────────────────────────
 
 async function handleMatchPage(matchId, league, env, lang) {
   const t = TR[lang] || TR.ar;
@@ -1404,8 +1275,6 @@ ${data.penaltyWinner ? `<div class="meta" style="color:#f0883e;font-weight:700">
     headers: { ...CORS, 'Content-Type': 'text/html;charset=UTF-8', 'Cache-Control': 'public,max-age=3600' }
   });
 }
-
-// ─── SEO Page: Standings ──────────────────────────────────────────────────────
 
 async function handleStandingsPage(league, season, env, lang) {
   const t = TR[lang] || TR.ar;
@@ -1512,8 +1381,6 @@ ${tablesHtml}
   return new Response(html, { headers: { ...CORS, 'Content-Type': 'text/html;charset=UTF-8', 'Cache-Control': 'public,max-age=3600' } });
 }
 
-// ─── SEO Page: Scorers ────────────────────────────────────────────────────────
-
 async function handleScorersPage(league, season, env, lang) {
   const t = TR[lang] || TR.ar;
 
@@ -1581,8 +1448,6 @@ a{color:#58a6ff}
   return new Response(html, { headers: { ...CORS, 'Content-Type': 'text/html;charset=UTF-8', 'Cache-Control': 'public,max-age=3600' } });
 }
 
-// ─── Robots.txt ───────────────────────────────────────────────────────────────
-
 function handleRobotsTxt(env) {
   const BASE = env.WORKER_BASE_URL || '';
   const txt = `User-agent: *\nAllow: /page/\nDisallow: /api/\nDisallow: /api/archive\n\nSitemap: ${BASE}/sitemap.xml\n`;
@@ -1591,23 +1456,18 @@ function handleRobotsTxt(env) {
   });
 }
 
-// ─── Sitemap ──────────────────────────────────────────────────────────────────
-
 async function handleSitemap(env) {
   const BASE    = env.WORKER_BASE_URL || 'https://football-worker.YOUR_NAME.workers.dev';
   const curYear = new Date().getFullYear();
   const SEASONS = [String(curYear-4), String(curYear-3), String(curYear-2), String(curYear-1), String(curYear)];
 
   const urls = [];
-  // نستخدم KNOWN_LEAGUES (110+ دوري) — الكؤوس لا standings لها (NO_STANDINGS)
   KNOWN_LEAGUES.forEach(id => {
     const hasStandings = !NO_STANDINGS.has(id);
-    // الهدافون لكل الدوريات
     urls.push(`<url><loc>${BASE}/page/scorers/${id}</loc><changefreq>daily</changefreq><priority>0.8</priority></url>`);
     SEASONS.forEach(s => {
       urls.push(`<url><loc>${BASE}/page/scorers/${id}/${s}</loc><changefreq>monthly</changefreq><priority>0.6</priority></url>`);
     });
-    // الترتيب فقط للدوريات (لا الكؤوس)
     if (hasStandings) {
       urls.push(`<url><loc>${BASE}/page/standings/${id}</loc><changefreq>daily</changefreq><priority>0.9</priority></url>`);
       SEASONS.forEach(s => {
@@ -1619,8 +1479,6 @@ async function handleSitemap(env) {
   const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>`;
   return new Response(xml, { headers: { 'Content-Type': 'application/xml', 'Cache-Control': 'public,max-age=86400' } });
 }
-
-// ─── API Handlers ─────────────────────────────────────────────────────────────
 
 async function handleMatches(url, env) {
   const date   = url.searchParams.get('date') || todayStr();
@@ -1677,7 +1535,6 @@ async function handleFixturesAPI(url, env) {
   if (!payload) payload = await refreshFixtures(env);
   if (!payload) return errResp('No fixtures data', 404);
 
-  // دمج مع المباريات البعيدة (كأس العالم، بطولات مجدولة منذ أشهر) من deepFutureScan
   const future = await kvGet(env, 'fixtures:future');
   if (Array.isArray(future) && future.length) {
     const ids   = new Set(payload.matches.map(m => m.id));
@@ -1716,8 +1573,6 @@ async function handleArchiveStatus(url, env) {
   });
 }
 
-// ─── Page Router ──────────────────────────────────────────────────────────────
-
 async function handlePage(path, url, env) {
   const parts = path.split('/').filter(Boolean);
   if (parts[0] !== 'page') return errResp('Not Found', 404);
@@ -1746,12 +1601,15 @@ async function handlePage(path, url, env) {
   return errResp('Not Found', 404);
 }
 
-// ─── Response Helpers ─────────────────────────────────────────────────────────
-
 function jsonResp(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { ...CORS, 'Content-Type': 'application/json' },
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Content-Type': 'application/json'
+    },
   });
 }
 
@@ -1759,30 +1617,56 @@ function errResp(msg, status = 500) {
   return jsonResp({ success: false, error: msg }, status);
 }
 
-// ─── Main Export ──────────────────────────────────────────────────────────────
-
 export default {
   async fetch(request, env, ctx) {
     if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: CORS });
+      return new Response(null, {
+        status: 204,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type',
+          'Access-Control-Max-Age': '86400',
+        }
+      });
     }
 
-    const url  = new URL(request.url);
+    const url = new URL(request.url);
     const path = url.pathname;
+    let response;
 
     try {
-      if (path === '/ping')              return new Response('pong', { headers: CORS });
-      if (path === '/robots.txt')        return handleRobotsTxt(env);
-      if (path === '/api/matches')       return handleMatches(url, env);
-      if (path === '/api/summary')       return handleSummaryAPI(url, env);
-      if (path === '/api/standings')     return handleStandingsAPI(url, env);
-      if (path === '/api/scorers')       return handleScorersAPI(url, env);
-      if (path === '/api/fixtures')      return handleFixturesAPI(url, env);
-      if (path === '/api/archive')       return handleArchiveStatus(url, env);
-      if (path === '/sitemap.xml')       return handleSitemap(env);
-      if (path.startsWith('/page/'))     return handlePage(path, url, env);
+      if (path === '/ping') {
+        response = new Response('pong', { headers: CORS });
+      } else if (path === '/robots.txt') {
+        response = handleRobotsTxt(env);
+      } else if (path === '/api/matches') {
+        response = await handleMatches(url, env);
+      } else if (path === '/api/summary') {
+        response = await handleSummaryAPI(url, env);
+      } else if (path === '/api/standings') {
+        response = await handleStandingsAPI(url, env);
+      } else if (path === '/api/scorers') {
+        response = await handleScorersAPI(url, env);
+      } else if (path === '/api/fixtures') {
+        response = await handleFixturesAPI(url, env);
+      } else if (path === '/api/archive') {
+        response = await handleArchiveStatus(url, env);
+      } else if (path === '/sitemap.xml') {
+        response = await handleSitemap(env);
+      } else if (path.startsWith('/page/')) {
+        response = await handlePage(path, url, env);
+      } else {
+        return errResp('Not Found', 404);
+      }
 
-      return errResp('Not Found', 404);
+      // إضافة CORS headers لجميع الردود
+      response.headers.set('Access-Control-Allow-Origin', '*');
+      response.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      response.headers.set('Access-Control-Allow-Headers', 'Content-Type');
+      
+      return response;
+
     } catch (e) {
       return errResp(e.message);
     }
@@ -1791,17 +1675,14 @@ export default {
   async scheduled(event, env, ctx) {
     const cron = event.cron;
 
-    // كل دقيقة: تحديث ذكي
     if (cron === '* * * * *') {
       ctx.waitUntil(smartRefresh(env));
     }
 
-    // كل 6 ساعات تقريباً: تحديث المباريات القادمة
     if (cron === '0 */6 * * *') {
       ctx.waitUntil(refreshFixtures(env));
     }
 
-    // كل 20 دقيقة: أرشيف أولاً — بعد اكتمال الأرشيف يتحول لمسح مستقبلي (365 يوم)
     if (cron === '*/20 * * * *') {
       const archiveState = await kvGet(env, 'archive:state');
       if (!archiveState?.completed) {
