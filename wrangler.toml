@@ -1,0 +1,17 @@
+name = "football-worker"
+main = "src/worker.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+WORKER_BASE_URL = "https://football-worker.YOUR_SUBDOMAIN.workers.dev"
+
+[[kv_namespaces]]
+binding = "FOOTBALL_KV"
+id = "ضع_KV_NAMESPACE_ID_هنا"
+
+[triggers]
+crons = [
+  "* * * * *",
+  "0 */6 * * *",
+  "*/20 * * * *"
+]
